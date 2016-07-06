@@ -495,6 +495,8 @@ static void initialize_nghttp2_session(http2_session_data *session_data) {
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks,
                                                          on_frame_recv_callback);
 
+    nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, server_on_data_chunk_recv_callback);
+
     nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
 
     nghttp2_session_callbacks_set_on_header_callback(callbacks,
@@ -504,8 +506,6 @@ static void initialize_nghttp2_session(http2_session_data *session_data) {
             callbacks, on_begin_headers_callback);
 
     nghttp2_session_server_new(&session_data->session, callbacks, session_data);
-
-    nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, server_on_data_chunk_recv_callback);
 
     nghttp2_session_callbacks_del(callbacks);
 }
