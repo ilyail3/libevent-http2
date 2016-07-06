@@ -95,28 +95,7 @@
 
 #define _U_ __attribute__((unused))
 
-struct app_context;
-typedef struct app_context app_context;
 
-typedef struct http2_stream_data {
-    struct http2_stream_data *prev, *next;
-    char *request_path;
-    int32_t stream_id;
-    int fd;
-} http2_stream_data;
-
-typedef struct http2_session_data {
-    struct http2_stream_data root;
-    struct bufferevent *bev;
-    app_context *app_ctx;
-    nghttp2_session *session;
-    char *client_addr;
-} http2_session_data;
-
-struct app_context {
-    SSL_CTX *ssl_ctx;
-    struct event_base *evbase;
-};
 
 static unsigned char next_proto_list[256];
 static size_t next_proto_list_len;
@@ -178,43 +157,7 @@ static SSL *create_ssl(SSL_CTX *ssl_ctx) {
     return ssl;
 }
 
-static void add_stream(http2_session_data *session_data,
-                       http2_stream_data *stream_data) {
-    stream_data->next = session_data->root.next;
-    session_data->root.next = stream_data;
-    stream_data->prev = &session_data->root;
-    if (stream_data->next) {
-        stream_data->next->prev = stream_data;
-    }
-}
 
-static void remove_stream(http2_session_data *session_data _U_,
-                          http2_stream_data *stream_data) {
-    stream_data->prev->next = stream_data->next;
-    if (stream_data->next) {
-        stream_data->next->prev = stream_data->prev;
-    }
-}
-
-static http2_stream_data *
-create_http2_stream_data(http2_session_data *session_data, int32_t stream_id) {
-    http2_stream_data *stream_data;
-    stream_data = (http2_stream_data *) malloc(sizeof(http2_stream_data));
-    memset(stream_data, 0, sizeof(http2_stream_data));
-    stream_data->stream_id = stream_id;
-    stream_data->fd = -1;
-
-    add_stream(session_data, stream_data);
-    return stream_data;
-}
-
-static void delete_http2_stream_data(http2_stream_data *stream_data) {
-    if (stream_data->fd != -1) {
-        close(stream_data->fd);
-    }
-    free(stream_data->request_path);
-    free(stream_data);
-}
 
 static http2_session_data *create_http2_session_data(app_context *app_ctx,
                                                      int fd,
@@ -484,6 +427,51 @@ static int time_reply(nghttp2_session *session,
     return 0;
 }
 
+static int data_reply(nghttp2_session *session,
+                      http2_stream_data *stream_data){
+    int rv;
+    ssize_t writelen;
+    int pipefd[2];
+    nghttp2_nv hdrs[] = {MAKE_NV(":status", "200"), MAKE_NV("content-type", "text/plain")};
+
+    rv = pipe(pipefd);
+    if (rv != 0) {
+        warn("Could not create pipe");
+        rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE,
+                                       stream_data->stream_id,
+                                       NGHTTP2_INTERNAL_ERROR);
+        if (rv != 0) {
+            warnx("Fatal error: %s", nghttp2_strerror(rv));
+            return -1;
+        }
+        return 0;
+    }
+
+
+    char buffer[50];
+
+    time_t now;
+    time(&now);
+    size_t time_length = strftime(buffer, sizeof buffer, "%FT%TZ", gmtime(&now));
+
+    writelen = write(pipefd[1], buffer, time_length - 1);
+    close(pipefd[1]);
+
+    if (writelen != time_length - 1) {
+        close(pipefd[0]);
+        return -1;
+    }
+
+    stream_data->fd = pipefd[0];
+
+    if (send_response(session, stream_data->stream_id, hdrs, ARRLEN(hdrs),
+                      pipefd[0]) != 0) {
+        close(pipefd[0]);
+        return -1;
+    }
+    return 0;
+}
+
 /* nghttp2_on_header_callback: Called when nghttp2 library emits
    single header name/value pair. */
 static int on_header_callback(nghttp2_session *session,
@@ -545,6 +533,8 @@ static int on_request_recv(nghttp2_session *session,
     nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
     char *rel_path;
 
+
+
     if (!stream_data->request_path) {
         if (error_reply(session, stream_data) != 0) {
             return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -560,8 +550,13 @@ static int on_request_recv(nghttp2_session *session,
         return 0;
     }
     for (rel_path = stream_data->request_path; *rel_path == '/'; ++rel_path);
-    if(strcmp(rel_path,"time") == 0){
-        if(time_reply(session, stream_data) != 0){
+    if(strcmp(rel_path,"time") == 0) {
+        if (time_reply(session, stream_data) != 0) {
+            return NGHTTP2_ERR_CALLBACK_FAILURE;
+        }
+        return 0;
+    } else if(strcmp(rel_path, "data") == 0) {
+        if (data_reply(session, stream_data) != 0) {
             return NGHTTP2_ERR_CALLBACK_FAILURE;
         }
         return 0;
