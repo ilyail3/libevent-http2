@@ -16,8 +16,12 @@
 static unsigned char next_proto_list[256];
 static size_t next_proto_list_len;
 
-static int next_proto_cb(SSL *s _U_, const unsigned char **data,
-                         unsigned int *len, void *arg _U_) {
+static int next_proto_cb(
+        SSL *s _U_,
+        const unsigned char **data,
+        unsigned int *len,
+        void *arg _U_
+) {
     *data = next_proto_list;
     *len = (unsigned int) next_proto_list_len;
     return SSL_TLSEXT_ERR_OK;
@@ -35,7 +39,10 @@ SSL *create_ssl(SSL_CTX *ssl_ctx) {
 }
 
 /* Create SSL_CTX. */
-SSL_CTX *create_ssl_ctx(const char *key_file, const char *cert_file) {
+SSL_CTX *create_ssl_ctx(
+        const char *key_file,
+        const char *cert_file
+) {
     SSL_CTX *ssl_ctx;
     EC_KEY *ecdh;
 

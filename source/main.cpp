@@ -54,8 +54,6 @@
 #include <fcntl.h>
 #endif /* HAVE_FCNTL_H */
 
-#include <ctype.h>
-
 #ifdef HAVE_NETINET_IN_H
 #include <netinet/in.h>
 #endif /* HAVE_NETINET_IN_H */
@@ -84,7 +82,6 @@
 #include <event2/bufferevent_ssl.h>
 #include <event2/listener.h>
 
-#include <nghttp2/nghttp2.h>
 #include <zconf.h>
 #include <fcntl.h>
 
@@ -98,9 +95,6 @@
     (uint8_t *) NAME, (uint8_t *)VALUE, sizeof(NAME) - 1, sizeof(VALUE) - 1,   \
         NGHTTP2_NV_FLAG_NONE                                                   \
   }
-
-
-
 
 
 /* Serialize the frame and send (or buffer) the data to
@@ -140,8 +134,13 @@ static int session_recv(http2_session_data *session_data) {
     return 0;
 }
 
-static ssize_t send_callback(nghttp2_session *session _U_, const uint8_t *data,
-                             size_t length, int flags _U_, void *user_data) {
+static ssize_t send_callback(
+        nghttp2_session *session _U_,
+        const uint8_t *data,
+        size_t length,
+        int flags _U_,
+        void *user_data
+) {
     http2_session_data *session_data = (http2_session_data *) user_data;
     struct bufferevent *bev = session_data->bev;
     /* Avoid excessive buffering in server side. */
@@ -154,7 +153,10 @@ static ssize_t send_callback(nghttp2_session *session _U_, const uint8_t *data,
 }
 
 /* Returns nonzero if the string |s| ends with the substring |sub| */
-static int ends_with(const char *s, const char *sub) {
+static int ends_with(
+        const char *s,
+        const char *sub
+) {
     size_t slen = strlen(s);
     size_t sublen = strlen(sub);
     if (slen < sublen) {
@@ -164,14 +166,15 @@ static int ends_with(const char *s, const char *sub) {
 }
 
 
-
-
-
-static ssize_t file_read_callback(nghttp2_session *session _U_,
-                                  int32_t stream_id _U_, uint8_t *buf,
-                                  size_t length, uint32_t *data_flags,
-                                  nghttp2_data_source *source,
-                                  void *user_data _U_) {
+static ssize_t file_read_callback(
+        nghttp2_session *session _U_,
+        int32_t stream_id _U_,
+        uint8_t *buf,
+        size_t length,
+        uint32_t *data_flags,
+        nghttp2_data_source *source,
+        void *user_data _U_
+) {
     int fd = source->fd;
     ssize_t r;
     while ((r = read(fd, buf, length)) == -1 && errno == EINTR);
@@ -184,8 +187,13 @@ static ssize_t file_read_callback(nghttp2_session *session _U_,
     return r;
 }
 
-static int send_response(nghttp2_session *session, int32_t stream_id,
-                         nghttp2_nv *nva, size_t nvlen, int fd) {
+static int send_response(
+        nghttp2_session *session,
+        int32_t stream_id,
+        nghttp2_nv *nva,
+        size_t nvlen,
+        int fd
+) {
     int rv;
     nghttp2_data_provider data_prd;
     data_prd.source.fd = fd;
@@ -202,8 +210,10 @@ static int send_response(nghttp2_session *session, int32_t stream_id,
 static const char ERROR_HTML[] = "<html><head><title>404</title></head>"
         "<body><h1>404 Not Found</h1></body></html>";
 
-static int error_reply(nghttp2_session *session,
-                       http2_stream_data *stream_data) {
+static int error_reply(
+        nghttp2_session *session,
+        http2_stream_data *stream_data
+) {
     int rv;
     ssize_t writelen;
     int pipefd[2];
@@ -240,8 +250,10 @@ static int error_reply(nghttp2_session *session,
     return 0;
 }
 
-static int time_reply(nghttp2_session *session,
-                      http2_stream_data *stream_data){
+static int time_reply(
+        nghttp2_session *session,
+        http2_stream_data *stream_data
+) {
     int rv;
     ssize_t writelen;
     int pipefd[2];
@@ -268,10 +280,10 @@ static int time_reply(nghttp2_session *session,
     size_t time_length = strftime(buffer, sizeof buffer, "%FT%TZ", gmtime(&now));
 
     int64_t body_size = 0;
-    if(stream_data->request_body != nullptr)
+    if (stream_data->request_body != nullptr)
         body_size = stream_data->request_body->len;
 
-    time_length += sprintf(buffer+time_length, " ds:%d", body_size) + 1;
+    time_length += sprintf(buffer + time_length, " ds:%d", body_size) + 1;
 
     writelen = write(pipefd[1], buffer, time_length - 1);
     close(pipefd[1]);
@@ -293,11 +305,16 @@ static int time_reply(nghttp2_session *session,
 
 /* nghttp2_on_header_callback: Called when nghttp2 library emits
    single header name/value pair. */
-static int on_header_callback(nghttp2_session *session,
-                              const nghttp2_frame *frame, const uint8_t *name,
-                              size_t namelen, const uint8_t *value,
-                              size_t valuelen, uint8_t flags _U_,
-                              void *user_data _U_) {
+static int on_header_callback(
+        nghttp2_session *session,
+        const nghttp2_frame *frame,
+        const uint8_t *name,
+        size_t namelen,
+        const uint8_t *value,
+        size_t valuelen,
+        uint8_t flags _U_,
+        void *user_data _U_
+) {
     http2_stream_data *stream_data;
 
     switch (frame->hd.type) {
@@ -307,7 +324,7 @@ static int on_header_callback(nghttp2_session *session,
             }
 
             stream_data =
-                    (http2_stream_data *)nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+                    (http2_stream_data *) nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
 
             if (!stream_data) {
                 break;
@@ -320,9 +337,11 @@ static int on_header_callback(nghttp2_session *session,
     return 0;
 }
 
-static int on_begin_headers_callback(nghttp2_session *session,
-                                     const nghttp2_frame *frame,
-                                     void *user_data) {
+static int on_begin_headers_callback(
+        nghttp2_session *session,
+        const nghttp2_frame *frame,
+        void *user_data
+) {
     http2_session_data *session_data = (http2_session_data *) user_data;
     http2_stream_data *stream_data;
 
@@ -345,9 +364,11 @@ static int check_path(const char *path) {
            !ends_with(path, "/..") && !ends_with(path, "/.");
 }
 
-static int on_request_recv(nghttp2_session *session,
-                           http2_session_data *session_data,
-                           http2_stream_data *stream_data) {
+static int on_request_recv(
+        nghttp2_session *session,
+        http2_session_data *session_data,
+        http2_stream_data *stream_data
+) {
     int fd;
     nghttp2_nv hdrs[] = {
             MAKE_NV(":status", "200")
@@ -375,8 +396,8 @@ static int on_request_recv(nghttp2_session *session,
         return 0;
     }
     for (rel_path = stream_data->request_path; *rel_path == '/'; ++rel_path);
-    if(strcmp(rel_path,"time") == 0){
-        if(time_reply(session, stream_data) != 0){
+    if (strcmp(rel_path, "time") == 0) {
+        if (time_reply(session, stream_data) != 0) {
             return NGHTTP2_ERR_CALLBACK_FAILURE;
         }
         return 0;
@@ -399,8 +420,11 @@ static int on_request_recv(nghttp2_session *session,
     }
 }
 
-static int on_frame_recv_callback(nghttp2_session *session,
-                                  const nghttp2_frame *frame, void *user_data) {
+static int on_frame_recv_callback(
+        nghttp2_session *session,
+        const nghttp2_frame *frame,
+        void *user_data
+) {
     http2_session_data *session_data = (http2_session_data *) user_data;
     http2_stream_data *stream_data;
     switch (frame->hd.type) {
@@ -425,8 +449,12 @@ static int on_frame_recv_callback(nghttp2_session *session,
     return 0;
 }
 
-static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
-                                    uint32_t error_code _U_, void *user_data) {
+static int on_stream_close_callback(
+        nghttp2_session *session,
+        int32_t stream_id,
+        uint32_t error_code _U_,
+        void *user_data
+) {
     http2_session_data *session_data = (http2_session_data *) user_data;
     http2_stream_data *stream_data;
 
@@ -439,18 +467,22 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
     return 0;
 }
 
-static int server_on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags, int32_t stream_id,
-                                              const uint8_t *data, size_t len, void *user_data)
-{
-    http2_session_data *session_data = (http2_session_data *)user_data;
-    http2_stream_data* stream_data = (http2_stream_data*)nghttp2_session_get_stream_user_data(session, stream_id);
+static int server_on_data_chunk_recv_callback(
+        nghttp2_session *session,
+        uint8_t flags,
+        int32_t stream_id,
+        const uint8_t *data, size_t len,
+        void *user_data
+) {
+    http2_session_data *session_data = (http2_session_data *) user_data;
+    http2_stream_data *stream_data = (http2_stream_data *) nghttp2_session_get_stream_user_data(session, stream_id);
     int rv;
 
 
     // TODO: buffering and stored file or memory, currently store len byte
     // when callback only once
     if (stream_data->request_body == nullptr) {
-        stream_data->request_body = (http2_request_body*)malloc(sizeof(http2_request_body));
+        stream_data->request_body = (http2_request_body *) malloc(sizeof(http2_request_body));
         memset(stream_data->request_body, 0, sizeof(http2_request_body));
     }
 
@@ -469,7 +501,7 @@ static int server_on_data_chunk_recv_callback(nghttp2_session *session, uint8_t 
         if (stream_data->request_body->len >= HTTP2_MAX_POST_DATA_SIZE) {
             fprintf(stderr, "post data length(%ld) exceed "
                             "MRB_HTTP2_MAX_POST_DATA_SIZE(%d)\n",
-                    (long)stream_data->request_body->len, HTTP2_MAX_POST_DATA_SIZE);
+                    (long) stream_data->request_body->len, HTTP2_MAX_POST_DATA_SIZE);
 
             stream_data->request_body->len = HTTP2_MAX_POST_DATA_SIZE;
             stream_data->request_body->last = 1;
@@ -484,7 +516,7 @@ static int server_on_data_chunk_recv_callback(nghttp2_session *session, uint8_t 
         }
 
         stream_data->request_body->data =
-                (char *)realloc(stream_data->request_body->data, stream_data->request_body->len + 1);
+                (char *) realloc(stream_data->request_body->data, stream_data->request_body->len + 1);
         pos = stream_data->request_body->data;
         pos += stream_data->request_body->pos;
         memcpy(pos, data, stream_data->request_body->len - stream_data->request_body->pos);
@@ -538,7 +570,10 @@ static int send_server_connection_header(http2_session_data *session_data) {
 
 /* readcb for bufferevent after client connection header was
    checked. */
-static void readcb(struct bufferevent *bev _U_, void *ptr) {
+static void readcb(
+        struct bufferevent *bev _U_,
+        void *ptr
+) {
     http2_session_data *session_data = (http2_session_data *) ptr;
     if (session_recv(session_data) != 0) {
         delete_http2_session_data(session_data);
@@ -554,7 +589,10 @@ static void readcb(struct bufferevent *bev _U_, void *ptr) {
    process pending data in the output buffer. This is necessary
    because we have a threshold on the buffer size to avoid too much
    buffering. See send_callback(). */
-static void writecb(struct bufferevent *bev, void *ptr) {
+static void writecb(
+        struct bufferevent *bev,
+        void *ptr
+) {
     http2_session_data *session_data = (http2_session_data *) ptr;
     if (evbuffer_get_length(bufferevent_get_output(bev)) > 0) {
         return;
@@ -571,7 +609,11 @@ static void writecb(struct bufferevent *bev, void *ptr) {
 }
 
 /* eventcb for bufferevent */
-static void eventcb(struct bufferevent *bev _U_, short events, void *ptr) {
+static void eventcb(
+        struct bufferevent *bev _U_,
+        short events,
+        void *ptr
+) {
     http2_session_data *session_data = (http2_session_data *) ptr;
     if (events & BEV_EVENT_CONNECTED) {
         fprintf(stderr, "%s connected\n", session_data->client_addr);
@@ -596,8 +638,13 @@ static void eventcb(struct bufferevent *bev _U_, short events, void *ptr) {
 }
 
 /* callback for evconnlistener */
-static void acceptcb(struct evconnlistener *listener _U_, int fd,
-                     struct sockaddr *addr, int addrlen, void *arg) {
+static void acceptcb(
+        struct evconnlistener *listener _U_,
+        int fd,
+        struct sockaddr *addr,
+        int addrlen,
+        void *arg
+) {
     app_context *app_ctx = (app_context *) arg;
     http2_session_data *session_data;
 
@@ -606,8 +653,11 @@ static void acceptcb(struct evconnlistener *listener _U_, int fd,
     bufferevent_setcb(session_data->bev, readcb, writecb, eventcb, session_data);
 }
 
-static void start_listen(struct event_base *evbase, const char *service,
-                         app_context *app_ctx) {
+static void start_listen(
+        struct event_base *evbase,
+        const char *service,
+        app_context *app_ctx
+) {
     int rv;
     struct addrinfo hints;
     struct addrinfo *res, *rp;
@@ -638,15 +688,21 @@ static void start_listen(struct event_base *evbase, const char *service,
     errx(1, "Could not start listener");
 }
 
-static void initialize_app_context(app_context *app_ctx, SSL_CTX *ssl_ctx,
-                                   struct event_base *evbase) {
+static void initialize_app_context(
+        app_context *app_ctx,
+        SSL_CTX *ssl_ctx,
+        struct event_base *evbase
+) {
     memset(app_ctx, 0, sizeof(app_context));
     app_ctx->ssl_ctx = ssl_ctx;
     app_ctx->evbase = evbase;
 }
 
-static void run(const char *service, const char *key_file,
-                const char *cert_file) {
+static void run(
+        const char *service,
+        const char *key_file,
+        const char *cert_file
+) {
     SSL_CTX *ssl_ctx;
     app_context app_ctx;
     struct event_base *evbase;

@@ -12,10 +12,12 @@
 #include "ssl_config.h"
 #include "http2_streams.h"
 
-http2_session_data *create_http2_session_data(app_context *app_ctx,
-                                                     int fd,
-                                                     struct sockaddr *addr,
-                                                     int addrlen) {
+http2_session_data *create_http2_session_data(
+        app_context *app_ctx,
+        int fd,
+        struct sockaddr *addr,
+        int addrlen
+) {
     int rv;
     http2_session_data *session_data;
     SSL *ssl;

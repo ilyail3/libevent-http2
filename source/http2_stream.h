@@ -18,7 +18,7 @@ typedef struct http2_stream_data {
     char *request_path;
     char *method;
 
-    http2_request_body* request_body;
+    http2_request_body *request_body;
 
     int32_t stream_id;
     int fd;

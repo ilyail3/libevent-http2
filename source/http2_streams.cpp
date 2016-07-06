@@ -6,8 +6,10 @@
 #include <cctype>
 #include "http2_streams.h"
 
-void add_stream(http2_session_data *session_data,
-                http2_stream_data *stream_data) {
+void add_stream(
+        http2_session_data *session_data,
+        http2_stream_data *stream_data
+) {
     stream_data->next = session_data->root.next;
     session_data->root.next = stream_data;
     stream_data->prev = &session_data->root;
@@ -16,8 +18,10 @@ void add_stream(http2_session_data *session_data,
     }
 }
 
-void remove_stream(http2_session_data *session_data _U_,
-                   http2_stream_data *stream_data) {
+void remove_stream(
+        http2_session_data *session_data _U_,
+        http2_stream_data *stream_data
+) {
     stream_data->prev->next = stream_data->next;
     if (stream_data->next) {
         stream_data->next->prev = stream_data->prev;
@@ -25,7 +29,10 @@ void remove_stream(http2_session_data *session_data _U_,
 }
 
 
-http2_stream_data *create_http2_stream_data(http2_session_data *session_data, int32_t stream_id) {
+http2_stream_data *create_http2_stream_data(
+        http2_session_data *session_data,
+        int32_t stream_id
+) {
     http2_stream_data *stream_data;
     stream_data = (http2_stream_data *) malloc(sizeof(http2_stream_data));
     memset(stream_data, 0, sizeof(http2_stream_data));
@@ -45,13 +52,13 @@ void delete_http2_stream_data(http2_stream_data *stream_data) {
         close(stream_data->fd);
     }
 
-    if(stream_data->request_body != nullptr)
+    if (stream_data->request_body != nullptr)
         free(stream_data->request_path);
 
-    if(stream_data->method != nullptr)
+    if (stream_data->method != nullptr)
         free(stream_data->method);
 
-    if(stream_data->request_body != nullptr){
+    if (stream_data->request_body != nullptr) {
         stream_data->request_body->last = 0;
         stream_data->request_body->len = 0;
         stream_data->request_body->pos = 0;
@@ -81,7 +88,10 @@ static uint8_t hex_to_uint(uint8_t c) {
    and returns the decoded byte string in allocated buffer. The return
    value is NULL terminated. The caller must free the returned
    string. */
-static char *percent_decode(const uint8_t *value, size_t valuelen) {
+static char *percent_decode(
+        const uint8_t *value,
+        size_t valuelen
+) {
     char *res;
 
     res = (char *) malloc(valuelen + 1);
@@ -106,7 +116,10 @@ static char *percent_decode(const uint8_t *value, size_t valuelen) {
     return res;
 }
 
-static size_t detect_header_end(const uint8_t *value, size_t max_length){
+static size_t detect_header_end(
+        const uint8_t *value,
+        size_t max_length
+) {
     size_t j;
     for (j = 0; j < max_length && value[j] != '?'; ++j);
 
