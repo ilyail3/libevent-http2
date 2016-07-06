@@ -65,6 +65,12 @@
 #ifndef __sgi
 
 #include <err.h>
+#include "http2_server.h"
+#include "unused.h"
+#include "ssl_config.h"
+#include "http2_session_data.h"
+#include "http2_streams.h"
+#include "http2_sessions.h"
 
 #endif
 
@@ -72,7 +78,6 @@
 #include <errno.h>
 
 #include <openssl/ssl.h>
-#include <openssl/err.h>
 #include <openssl/conf.h>
 
 #include <event.h>
@@ -84,6 +89,7 @@
 #include <fcntl.h>
 
 #define OUTPUT_WOULDBLOCK_THRESHOLD (1 << 16)
+#define HTTP2_MAX_POST_DATA_SIZE 1 << 24
 
 #define ARRLEN(x) (sizeof(x) / sizeof(x[0]))
 
@@ -93,175 +99,9 @@
         NGHTTP2_NV_FLAG_NONE                                                   \
   }
 
-#define _U_ __attribute__((unused))
 
-struct app_context;
-typedef struct app_context app_context;
 
-typedef struct http2_stream_data {
-    struct http2_stream_data *prev, *next;
-    char *request_path;
-    int32_t stream_id;
-    int fd;
-} http2_stream_data;
 
-typedef struct http2_session_data {
-    struct http2_stream_data root;
-    struct bufferevent *bev;
-    app_context *app_ctx;
-    nghttp2_session *session;
-    char *client_addr;
-} http2_session_data;
-
-struct app_context {
-    SSL_CTX *ssl_ctx;
-    struct event_base *evbase;
-};
-
-static unsigned char next_proto_list[256];
-static size_t next_proto_list_len;
-
-static int next_proto_cb(SSL *s _U_, const unsigned char **data,
-                         unsigned int *len, void *arg _U_) {
-    *data = next_proto_list;
-    *len = (unsigned int) next_proto_list_len;
-    return SSL_TLSEXT_ERR_OK;
-}
-
-/* Create SSL_CTX. */
-static SSL_CTX *create_ssl_ctx(const char *key_file, const char *cert_file) {
-    SSL_CTX *ssl_ctx;
-    EC_KEY *ecdh;
-
-    ssl_ctx = SSL_CTX_new(SSLv23_server_method());
-    if (!ssl_ctx) {
-        errx(1, "Could not create SSL/TLS context: %s",
-             ERR_error_string(ERR_get_error(), NULL));
-    }
-    SSL_CTX_set_options(ssl_ctx,
-                        SSL_OP_ALL | SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 |
-                        SSL_OP_NO_COMPRESSION |
-                        SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION);
-
-    ecdh = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (!ecdh) {
-        errx(1, "EC_KEY_new_by_curv_name failed: %s",
-             ERR_error_string(ERR_get_error(), NULL));
-    }
-    SSL_CTX_set_tmp_ecdh(ssl_ctx, ecdh);
-    EC_KEY_free(ecdh);
-
-    if (SSL_CTX_use_PrivateKey_file(ssl_ctx, key_file, SSL_FILETYPE_PEM) != 1) {
-        errx(1, "Could not read private key file %s", key_file);
-    }
-    if (SSL_CTX_use_certificate_chain_file(ssl_ctx, cert_file) != 1) {
-        errx(1, "Could not read certificate file %s", cert_file);
-    }
-
-    next_proto_list[0] = NGHTTP2_PROTO_VERSION_ID_LEN;
-    memcpy(&next_proto_list[1], NGHTTP2_PROTO_VERSION_ID,
-           NGHTTP2_PROTO_VERSION_ID_LEN);
-    next_proto_list_len = 1 + NGHTTP2_PROTO_VERSION_ID_LEN;
-
-    SSL_CTX_set_next_protos_advertised_cb(ssl_ctx, next_proto_cb, NULL);
-    return ssl_ctx;
-}
-
-/* Create SSL object */
-static SSL *create_ssl(SSL_CTX *ssl_ctx) {
-    SSL *ssl;
-    ssl = SSL_new(ssl_ctx);
-    if (!ssl) {
-        errx(1, "Could not create SSL/TLS session object: %s",
-             ERR_error_string(ERR_get_error(), NULL));
-    }
-    return ssl;
-}
-
-static void add_stream(http2_session_data *session_data,
-                       http2_stream_data *stream_data) {
-    stream_data->next = session_data->root.next;
-    session_data->root.next = stream_data;
-    stream_data->prev = &session_data->root;
-    if (stream_data->next) {
-        stream_data->next->prev = stream_data;
-    }
-}
-
-static void remove_stream(http2_session_data *session_data _U_,
-                          http2_stream_data *stream_data) {
-    stream_data->prev->next = stream_data->next;
-    if (stream_data->next) {
-        stream_data->next->prev = stream_data->prev;
-    }
-}
-
-static http2_stream_data *
-create_http2_stream_data(http2_session_data *session_data, int32_t stream_id) {
-    http2_stream_data *stream_data;
-    stream_data = (http2_stream_data *) malloc(sizeof(http2_stream_data));
-    memset(stream_data, 0, sizeof(http2_stream_data));
-    stream_data->stream_id = stream_id;
-    stream_data->fd = -1;
-
-    add_stream(session_data, stream_data);
-    return stream_data;
-}
-
-static void delete_http2_stream_data(http2_stream_data *stream_data) {
-    if (stream_data->fd != -1) {
-        close(stream_data->fd);
-    }
-    free(stream_data->request_path);
-    free(stream_data);
-}
-
-static http2_session_data *create_http2_session_data(app_context *app_ctx,
-                                                     int fd,
-                                                     struct sockaddr *addr,
-                                                     int addrlen) {
-    int rv;
-    http2_session_data *session_data;
-    SSL *ssl;
-    char host[NI_MAXHOST];
-    int val = 1;
-
-    ssl = create_ssl(app_ctx->ssl_ctx);
-    session_data = (http2_session_data *) malloc(sizeof(http2_session_data));
-    memset(session_data, 0, sizeof(http2_session_data));
-    session_data->app_ctx = app_ctx;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *) &val, sizeof(val));
-    session_data->bev = bufferevent_openssl_socket_new(
-            app_ctx->evbase, fd, ssl, BUFFEREVENT_SSL_ACCEPTING,
-            BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS);
-    rv = getnameinfo(addr, (socklen_t) addrlen, host, sizeof(host), NULL, 0,
-                     NI_NUMERICHOST);
-    if (rv != 0) {
-        session_data->client_addr = strdup("(unknown)");
-    } else {
-        session_data->client_addr = strdup(host);
-    }
-
-    return session_data;
-}
-
-static void delete_http2_session_data(http2_session_data *session_data) {
-    http2_stream_data *stream_data;
-    SSL *ssl = bufferevent_openssl_get_ssl(session_data->bev);
-    fprintf(stderr, "%s disconnected\n", session_data->client_addr);
-    if (ssl) {
-        SSL_shutdown(ssl);
-    }
-    bufferevent_free(session_data->bev);
-    nghttp2_session_del(session_data->session);
-    for (stream_data = session_data->root.next; stream_data;) {
-        http2_stream_data *next = stream_data->next;
-        delete_http2_stream_data(stream_data);
-        stream_data = next;
-    }
-    free(session_data->client_addr);
-    free(session_data);
-}
 
 /* Serialize the frame and send (or buffer) the data to
    bufferevent. */
@@ -323,48 +163,9 @@ static int ends_with(const char *s, const char *sub) {
     return memcmp(s + slen - sublen, sub, sublen) == 0;
 }
 
-/* Returns int value of hex string character |c| */
-static uint8_t hex_to_uint(uint8_t c) {
-    if ('0' <= c && c <= '9') {
-        return (uint8_t) (c - '0');
-    }
-    if ('A' <= c && c <= 'F') {
-        return (uint8_t) (c - 'A' + 10);
-    }
-    if ('a' <= c && c <= 'f') {
-        return (uint8_t) (c - 'a' + 10);
-    }
-    return 0;
-}
 
-/* Decodes percent-encoded byte string |value| with length |valuelen|
-   and returns the decoded byte string in allocated buffer. The return
-   value is NULL terminated. The caller must free the returned
-   string. */
-static char *percent_decode(const uint8_t *value, size_t valuelen) {
-    char *res;
 
-    res = (char *) malloc(valuelen + 1);
-    if (valuelen > 3) {
-        size_t i, j;
-        for (i = 0, j = 0; i < valuelen - 2;) {
-            if (value[i] != '%' || !isxdigit(value[i + 1]) ||
-                !isxdigit(value[i + 2])) {
-                res[j++] = (char) value[i++];
-                continue;
-            }
-            res[j++] =
-                    (char) ((hex_to_uint(value[i + 1]) << 4) + hex_to_uint(value[i + 2]));
-            i += 3;
-        }
-        memcpy(&res[j], &value[i], 2);
-        res[j + 2] = '\0';
-    } else {
-        memcpy(res, value, valuelen);
-        res[valuelen] = '\0';
-    }
-    return res;
-}
+
 
 static ssize_t file_read_callback(nghttp2_session *session _U_,
                                   int32_t stream_id _U_, uint8_t *buf,
@@ -492,22 +293,22 @@ static int on_header_callback(nghttp2_session *session,
                               size_t valuelen, uint8_t flags _U_,
                               void *user_data _U_) {
     http2_stream_data *stream_data;
-    const char PATH[] = ":path";
+
     switch (frame->hd.type) {
         case NGHTTP2_HEADERS:
             if (frame->headers.cat != NGHTTP2_HCAT_REQUEST) {
                 break;
             }
+
             stream_data =
-                    (http2_stream_data *) nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
-            if (!stream_data || stream_data->request_path) {
+                    (http2_stream_data *)nghttp2_session_get_stream_user_data(session, frame->hd.stream_id);
+
+            if (!stream_data) {
                 break;
             }
-            if (namelen == sizeof(PATH) - 1 && memcmp(PATH, name, namelen) == 0) {
-                size_t j;
-                for (j = 0; j < valuelen && value[j] != '?'; ++j);
-                stream_data->request_path = percent_decode(value, j);
-            }
+
+            handle_header(stream_data, name, namelen, value, valuelen);
+
             break;
     }
     return 0;
@@ -542,7 +343,10 @@ static int on_request_recv(nghttp2_session *session,
                            http2_session_data *session_data,
                            http2_stream_data *stream_data) {
     int fd;
-    nghttp2_nv hdrs[] = {MAKE_NV(":status", "200")};
+    nghttp2_nv hdrs[] = {
+            MAKE_NV(":status", "200")
+    };
+
     char *rel_path;
 
     if (!stream_data->request_path) {
@@ -551,8 +355,13 @@ static int on_request_recv(nghttp2_session *session,
         }
         return 0;
     }
-    fprintf(stderr, "%s GET %s\n", session_data->client_addr,
-            stream_data->request_path);
+
+    fprintf(stderr, "%s %s %s\n",
+            session_data->client_addr,
+            stream_data->method,
+            stream_data->request_path
+    );
+
     if (!check_path(stream_data->request_path)) {
         if (error_reply(session, stream_data) != 0) {
             return NGHTTP2_ERR_CALLBACK_FAILURE;
@@ -600,6 +409,7 @@ static int on_frame_recv_callback(nghttp2_session *session,
                 if (!stream_data) {
                     return 0;
                 }
+
                 return on_request_recv(session, session_data, stream_data);
             }
             break;
@@ -623,6 +433,58 @@ static int on_stream_close_callback(nghttp2_session *session, int32_t stream_id,
     return 0;
 }
 
+static int server_on_data_chunk_recv_callback(nghttp2_session *session, uint8_t flags, int32_t stream_id,
+                                              const uint8_t *data, size_t len, void *user_data)
+{
+    http2_session_data *session_data = (http2_session_data *)user_data;
+    http2_stream_data* stream_data = (http2_stream_data*)nghttp2_session_get_stream_user_data(session, stream_id);
+    int rv;
+
+
+    // TODO: buffering and stored file or memory, currently store len byte
+    // when callback only once
+    if (stream_data->request_body == nullptr) {
+        stream_data->request_body = (http2_request_body*)malloc(sizeof(http2_request_body));
+        memset(stream_data->request_body, 0, sizeof(http2_request_body));
+    }
+
+    if (stream_data->request_body->last) {
+        fprintf(stderr, "request_body length reached MRB_HTTP2_MAX_POST_DATA_SIZE");
+        rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, stream_data->stream_id, NGHTTP2_INTERNAL_ERROR);
+        if (rv != 0) {
+            fprintf(stderr, "Fatal error: %s", nghttp2_strerror(rv));
+            return NGHTTP2_ERR_CALLBACK_FAILURE;
+        }
+        return 0;
+    } else {
+        char *pos;
+        stream_data->request_body->len += len;
+        if (stream_data->request_body->len >= HTTP2_MAX_POST_DATA_SIZE) {
+            fprintf(stderr, "post data length(%ld) exceed "
+                            "MRB_HTTP2_MAX_POST_DATA_SIZE(%d)\n",
+                    (long)stream_data->request_body->len, HTTP2_MAX_POST_DATA_SIZE);
+            stream_data->request_body->len = HTTP2_MAX_POST_DATA_SIZE;
+            stream_data->request_body->last = 1;
+            rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, stream_data->stream_id, NGHTTP2_INTERNAL_ERROR);
+            if (rv != 0) {
+                fprintf(stderr, "Fatal error: %s", nghttp2_strerror(rv));
+                return NGHTTP2_ERR_CALLBACK_FAILURE;
+            }
+            return 0;
+        }
+
+        stream_data->request_body->data =
+                (char *)realloc(stream_data->request_body->data, stream_data->request_body->len + 1);
+        pos = stream_data->request_body->data;
+        pos += stream_data->request_body->pos;
+        memcpy(pos, data, stream_data->request_body->len - stream_data->request_body->pos);
+        stream_data->request_body->pos += len;
+        stream_data->request_body->data[stream_data->request_body->len] = '\0';
+    }
+
+    return 0;
+}
+
 static void initialize_nghttp2_session(http2_session_data *session_data) {
     nghttp2_session_callbacks *callbacks;
 
@@ -633,8 +495,7 @@ static void initialize_nghttp2_session(http2_session_data *session_data) {
     nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks,
                                                          on_frame_recv_callback);
 
-    nghttp2_session_callbacks_set_on_stream_close_callback(
-            callbacks, on_stream_close_callback);
+    nghttp2_session_callbacks_set_on_stream_close_callback(callbacks, on_stream_close_callback);
 
     nghttp2_session_callbacks_set_on_header_callback(callbacks,
                                                      on_header_callback);
@@ -643,6 +504,8 @@ static void initialize_nghttp2_session(http2_session_data *session_data) {
             callbacks, on_begin_headers_callback);
 
     nghttp2_session_server_new(&session_data->session, callbacks, session_data);
+
+    nghttp2_session_callbacks_set_on_data_chunk_recv_callback(callbacks, server_on_data_chunk_recv_callback);
 
     nghttp2_session_callbacks_del(callbacks);
 }
