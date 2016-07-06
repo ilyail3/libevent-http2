@@ -267,6 +267,12 @@ static int time_reply(nghttp2_session *session,
     time(&now);
     size_t time_length = strftime(buffer, sizeof buffer, "%FT%TZ", gmtime(&now));
 
+    int64_t body_size = 0;
+    if(stream_data->request_body != nullptr)
+        body_size = stream_data->request_body->len;
+
+    time_length += sprintf(buffer+time_length, " ds:%d", body_size) + 1;
+
     writelen = write(pipefd[1], buffer, time_length - 1);
     close(pipefd[1]);
 
@@ -459,13 +465,17 @@ static int server_on_data_chunk_recv_callback(nghttp2_session *session, uint8_t 
     } else {
         char *pos;
         stream_data->request_body->len += len;
+
         if (stream_data->request_body->len >= HTTP2_MAX_POST_DATA_SIZE) {
             fprintf(stderr, "post data length(%ld) exceed "
                             "MRB_HTTP2_MAX_POST_DATA_SIZE(%d)\n",
                     (long)stream_data->request_body->len, HTTP2_MAX_POST_DATA_SIZE);
+
             stream_data->request_body->len = HTTP2_MAX_POST_DATA_SIZE;
             stream_data->request_body->last = 1;
+
             rv = nghttp2_submit_rst_stream(session, NGHTTP2_FLAG_NONE, stream_data->stream_id, NGHTTP2_INTERNAL_ERROR);
+
             if (rv != 0) {
                 fprintf(stderr, "Fatal error: %s", nghttp2_strerror(rv));
                 return NGHTTP2_ERR_CALLBACK_FAILURE;

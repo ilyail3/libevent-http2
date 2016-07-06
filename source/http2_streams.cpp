@@ -45,8 +45,20 @@ void delete_http2_stream_data(http2_stream_data *stream_data) {
         close(stream_data->fd);
     }
 
-    free(stream_data->request_path);
-    free(stream_data->method);
+    if(stream_data->request_body != nullptr)
+        free(stream_data->request_path);
+
+    if(stream_data->method != nullptr)
+        free(stream_data->method);
+
+    if(stream_data->request_body != nullptr){
+        stream_data->request_body->last = 0;
+        stream_data->request_body->len = 0;
+        stream_data->request_body->pos = 0;
+
+        free(stream_data->request_body->data);
+        free(stream_data->request_body);
+    }
 
     free(stream_data);
 }
@@ -94,6 +106,13 @@ static char *percent_decode(const uint8_t *value, size_t valuelen) {
     return res;
 }
 
+static size_t detect_header_end(const uint8_t *value, size_t max_length){
+    size_t j;
+    for (j = 0; j < max_length && value[j] != '?'; ++j);
+
+    return j;
+}
+
 
 const char PATH[] = ":path";
 const char METHOD[] = ":method";
@@ -105,16 +124,8 @@ void handle_header(
         const uint8_t *value,
         size_t valuelen
 ) {
-    if (namelen == sizeof(PATH) - 1 && memcmp(PATH, name, namelen) == 0) {
-        size_t j;
-
-        for (j = 0; j < valuelen && value[j] != '?'; ++j);
-        stream_data->request_path = percent_decode(value, j);
-    }
-    else if (namelen == sizeof(METHOD) - 1 && memcmp(METHOD, name, namelen) == 0) {
-        size_t j;
-
-        for (j = 0; j < valuelen && value[j] != '?'; ++j);
-        stream_data->method = percent_decode(value, j);
-    }
+    if (namelen == sizeof(PATH) - 1 && memcmp(PATH, name, namelen) == 0)
+        stream_data->request_path = percent_decode(value, detect_header_end(value, valuelen));
+    else if (namelen == sizeof(METHOD) - 1 && memcmp(METHOD, name, namelen) == 0)
+        stream_data->method = percent_decode(value, detect_header_end(value, valuelen));
 }
